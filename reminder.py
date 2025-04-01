@@ -946,3 +946,105 @@ class ClockReminderApp:
                     self.clock_out_ampm.set(preset_data["clock_out_ampm"])
             
             messagebox.showinfo("Success", f"Loaded preset '{preset_name}'")
+    def update_time_format(self, event=None):
+        """Handle changes in the time format selection."""
+        selected_format = self.time_format.get()
+
+        # Update the hint label
+        if selected_format == '24-hour':
+            self.format_hint.config(text="Format: HH:MM (24-hour)")
+            # Hide AM/PM selectors if they exist and are packed
+            if hasattr(self, 'clock_in_ampm') and self.clock_in_ampm.winfo_ismapped():
+                self.clock_in_ampm.pack_forget()
+            if hasattr(self, 'clock_out_ampm') and self.clock_out_ampm.winfo_ismapped():
+                self.clock_out_ampm.pack_forget()
+        else: # 12-hour format
+            self.format_hint.config(text="Format: HH:MM (12-hour)")
+            # Show AM/PM selectors if they exist and are not already packed
+            # Ensure they are placed correctly relative to the entry widget
+            if hasattr(self, 'clock_in_ampm') and not self.clock_in_ampm.winfo_ismapped():
+                self.clock_in_ampm.pack(side=tk.LEFT, padx=5, after=self.clock_in_entry)
+            if hasattr(self, 'clock_out_ampm') and not self.clock_out_ampm.winfo_ismapped():
+                self.clock_out_ampm.pack(side=tk.LEFT, padx=5, after=self.clock_out_entry)
+        self.save_data() # Save the new format setting
+    def start_animations(self):
+        """Start the UI animations."""
+        self.animation_active = True
+        # Start dinosaur animation loop
+        self.animate_dinosaur()
+        # Initialize counter display (animation happens on update)
+        self.update_counter_display(self.reminder_count) # Initial display
+
+    def animate_dinosaur(self):
+        """Animates the dinosaur walking back and forth."""
+        if not self.animation_active:
+            return # Stop animation if not active
+
+        # Update position based on direction
+        self.dino_position += self.dino_direction
+
+        # Bounce off edges (adjust boundaries as needed for canvas width and dino size)
+        # Assuming canvas width 100 and dino approx 8 pixels wide * 4 pixel_size = 32
+        max_pos = 100 - (8 * 4) # Roughly 68
+        if self.dino_position >= max_pos or self.dino_position <= 0:
+            self.dino_direction *= -1 # Reverse direction
+
+        # Redraw the dinosaur
+        self.draw_dinosaur()
+
+        # Schedule the next frame (adjust timing for speed, e.g., 100ms)
+        self.root.after(100, self.animate_dinosaur)
+
+    def animate_counter(self, target_value):
+        """Animates the counter value increasing."""
+        # Get current displayed value (handle potential errors)
+        try:
+            current_value_str = self.counter_canvas.itemcget(self.count_display, 'text')
+            current_value = int(current_value_str)
+        except:
+             current_value = 0 # Default if text is not an int
+
+        # Calculate step (can be adjusted for smoother/faster animation)
+        step = math.ceil((target_value - current_value) / 10) # Move 1/10th of the way
+        if step == 0 and target_value > current_value:
+             step = 1 # Ensure at least 1 step increment if not yet at target
+
+        next_value = current_value + step
+
+        if next_value >= target_value:
+            # Reached or passed target, set final value
+            self.update_counter_display(target_value)
+        else:
+            # Update display and schedule next step
+            self.update_counter_display(next_value)
+            self.root.after(50, lambda: self.animate_counter(target_value)) # Adjust speed (50ms)
+
+    def update_counter_display(self, value):
+         """Helper function to update the counter canvas text."""
+         self.counter_canvas.itemconfig(self.count_display, text=str(value))
+
+if __name__ == "__main__":
+    # Create the main application window
+    root = tk.Tk()
+
+    # Create an instance of the ClockReminderApp
+    app = ClockReminderApp(root)
+
+    # Check for the "--minimized" argument before starting the main loop
+    # The logic inside __init__ already handles withdrawing the window
+    # if the argument is present, but the system tray needs to be created
+    # if the argument is passed and the app starts minimized.
+    # Note: The original code handles withdraw() inside __init__ when --minimized is passed,
+    # but doesn't explicitly call create_system_tray there. We ensure it's created here if needed.
+    if "--minimized" in sys.argv and not hasattr(app, 'tray_icon'):
+         # If started minimized and tray icon doesn't exist yet (e.g., not loaded from saved state), create it.
+         # The __init__ method already hides the window (root.withdraw()) if --minimized is passed.
+         app.create_system_tray() # Ensure tray icon is created for minimized startup
+
+
+    # Setup closing behavior - minimize to tray or exit
+    # The lambda ensures minimize_to_tray is called without arguments
+    root.protocol("WM_DELETE_WINDOW", app.minimize_to_tray)
+
+    # Start the Tkinter event loop
+    root.mainloop()
