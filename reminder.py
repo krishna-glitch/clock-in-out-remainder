@@ -4,13 +4,53 @@ import time
 import datetime
 import json
 import os
-from threading import Thread
 import sys
-import pystray
-from PIL import Image, ImageDraw
-import pytz
+import threading
+from pathlib import Path
+import platform
 import math
 import random
+
+# Conditional imports based on platform
+try:
+    import pytz
+except ImportError:
+    print("pytz not installed. Timezone functionality will be limited.")
+    pytz = None
+
+# Platform detection
+PLATFORM = platform.system().lower()  # 'windows', 'darwin' (macOS), or 'linux'
+
+# Try importing platform-specific libraries
+try:
+    if PLATFORM == 'windows':
+        import pystray
+        from PIL import Image, ImageDraw
+        TRAY_SUPPORT = True
+    elif PLATFORM == 'darwin':
+        # macOS-specific system tray (optional)
+        try:
+            import rumps  # Alternative for macOS
+            TRAY_SUPPORT = True
+        except ImportError:
+            TRAY_SUPPORT = False
+    elif PLATFORM == 'linux':
+        # Linux notifications
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+            import gi
+            gi.require_version('Notify', '0.7')
+            from gi.repository import Notify
+            Notify.init("ClockReminder")
+            TRAY_SUPPORT = True
+        except (ImportError, ValueError):
+            TRAY_SUPPORT = False
+    else:
+        TRAY_SUPPORT = False
+except ImportError:
+    TRAY_SUPPORT = False
+
 
 class ClockReminderApp:
     def __init__(self, root):
@@ -19,8 +59,15 @@ class ClockReminderApp:
         self.root.geometry("500x550")
         self.root.resizable(False, False)
         
-        # Set app icon and styling
-        self.root.iconbitmap("clock.ico") if os.path.exists("clock.ico") else None
+        # Get app directory
+        self.app_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        self.data_dir = self.get_data_dir()
+        
+        # Ensure data directory exists
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # Set app icon with platform-specific handling
+        self.set_app_icon()
         
         # Add custom colors - Dark green & light gray theme
         self.colors = {
@@ -36,10 +83,8 @@ class ClockReminderApp:
         
         self.root.configure(bg=self.colors["background"])
         
-        # Configure ttk styles for better appearance
-        self.style = ttk.Style()
-        self.style.configure("TButton", font=("Arial", 10, "bold"))
-        self.style.configure("TCombobox", font=("Arial", 10))
+        # Configure platform-specific fonts
+        self.set_platform_fonts()
         
         # Variables
         self.clock_in_time = tk.StringVar(value="09:00")
@@ -67,13 +112,73 @@ class ClockReminderApp:
         
         # Check if app was started with "--minimized" argument for background startup
         if len(sys.argv) > 1 and sys.argv[1] == "--minimized":
-            # Start minimized to system tray
+            # Start minimized to system tray if supported
             self.root.withdraw()
-            self.create_system_tray()
+            if TRAY_SUPPORT:
+                self.create_system_tray()
             
         # Start reminder thread if app was previously running
         if self.is_running:
             self.start_reminders()
+
+    def get_data_dir(self):
+        """Get platform-specific data directory for app files"""
+        if PLATFORM == 'windows':
+            # Windows: Use %APPDATA%\ClockReminder
+            return Path(os.environ.get('APPDATA', str(Path.home()))) / "ClockReminder"
+        elif PLATFORM == 'darwin':
+            # macOS: Use ~/Library/Application Support/ClockReminder
+            return Path.home() / "Library" / "Application Support" / "ClockReminder"
+        else:
+            # Linux/Others: Use ~/.clockreminder
+            return Path.home() / ".clockreminder"
+
+    def set_app_icon(self):
+        """Set app icon with platform-specific handling"""
+        # Check for different icon formats
+        icon_paths = [
+            self.app_dir / "clock.ico",
+            self.app_dir / "clock.png",
+            self.app_dir / "clock.icns"
+        ]
+        
+        for icon_path in icon_paths:
+            if icon_path.exists():
+                try:
+                    if PLATFORM == 'windows' and icon_path.suffix == '.ico':
+                        self.root.iconbitmap(str(icon_path))
+                        return
+                    elif PLATFORM == 'darwin' and hasattr(self.root, 'iconphoto'):
+                        # Tkinter on macOS may support iconphoto
+                        icon_img = tk.PhotoImage(file=str(icon_path))
+                        self.root.iconphoto(True, icon_img)
+                        return
+                    elif PLATFORM != 'windows':
+                        # For Linux and potentially macOS
+                        if hasattr(self.root, 'iconphoto') and icon_path.suffix == '.png':
+                            icon_img = tk.PhotoImage(file=str(icon_path))
+                            self.root.iconphoto(True, icon_img)
+                            return
+                except Exception as e:
+                    print(f"Error setting app icon: {e}")
+        
+        # If we reach here, no suitable icon was found or applied
+        print("No suitable icon found or icon could not be applied")
+
+    def set_platform_fonts(self):
+        """Configure platform-specific fonts"""
+        # Default font family based on platform
+        if PLATFORM == 'windows':
+            self.font_family = "Arial"
+        elif PLATFORM == 'darwin':
+            self.font_family = "SF Pro"  # macOS default font
+        else:
+            self.font_family = "DejaVu Sans"  # Common Linux font
+            
+        # Configure ttk styles for better appearance
+        self.style = ttk.Style()
+        self.style.configure("TButton", font=(self.font_family, 10, "bold"))
+        self.style.configure("TCombobox", font=(self.font_family, 10))
 
     def create_background(self):
         """Create a simple light gray background"""
@@ -157,7 +262,7 @@ class ClockReminderApp:
         
         # Title
         title_label = tk.Label(self.main_frame, text="Clock In/Out Reminder", 
-                              font=("Arial", 18, "bold"), bg=self.colors["background"], 
+                              font=(self.font_family, 18, "bold"), bg=self.colors["background"], 
                               fg=self.colors["primary"])
         title_label.pack(pady=(0, 15))
         
@@ -170,7 +275,7 @@ class ClockReminderApp:
         settings_header = tk.Frame(settings_frame, bg=self.colors["primary"], height=8)
         settings_header.pack(fill="x")
         
-        settings_title = tk.Label(settings_frame, text="Settings", font=("Arial", 12, "bold"), 
+        settings_title = tk.Label(settings_frame, text="Settings", font=(self.font_family, 12, "bold"), 
                                  bg='white', fg=self.colors["primary"])
         settings_title.pack(anchor="w", padx=15, pady=(10, 5))
         
@@ -182,7 +287,7 @@ class ClockReminderApp:
         format_frame = tk.Frame(settings_content, bg='white')
         format_frame.pack(fill="x", pady=5)
         
-        tk.Label(format_frame, text="Time Format:", font=("Arial", 10, "bold"), 
+        tk.Label(format_frame, text="Time Format:", font=(self.font_family, 10, "bold"), 
                 bg='white').pack(side=tk.LEFT, padx=5)
         
         format_options = ttk.Combobox(format_frame, textvariable=self.time_format, width=10)
@@ -194,13 +299,20 @@ class ClockReminderApp:
         timezone_frame = tk.Frame(settings_content, bg='white')
         timezone_frame.pack(fill="x", pady=5)
         
-        tk.Label(timezone_frame, text="Time Zone:", font=("Arial", 10, "bold"), 
+        tk.Label(timezone_frame, text="Time Zone:", font=(self.font_family, 10, "bold"), 
                 bg='white').pack(side=tk.LEFT, padx=5)
         
         timezone_options = ttk.Combobox(timezone_frame, textvariable=self.timezone, width=25)
-        popular_timezones = ['Local', 'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific', 
-                           'Europe/London', 'Europe/Paris', 'Asia/Tokyo', 'Australia/Sydney']
-        timezone_options['values'] = popular_timezones
+        
+        # Only show timezone options if pytz is available
+        if pytz:
+            popular_timezones = ['Local', 'US/Eastern', 'US/Central', 'US/Mountain', 'US/Pacific', 
+                               'Europe/London', 'Europe/Paris', 'Asia/Tokyo', 'Australia/Sydney']
+            timezone_options['values'] = popular_timezones
+        else:
+            timezone_options['values'] = ['Local']
+            self.timezone.set('Local')
+            
         timezone_options.pack(side=tk.LEFT, padx=5)
         
         # Create card-like container for time inputs
@@ -212,7 +324,7 @@ class ClockReminderApp:
         times_header = tk.Frame(times_frame, bg=self.colors["primary"], height=8)
         times_header.pack(fill="x")
         
-        times_title = tk.Label(times_frame, text="Reminder Times", font=("Arial", 12, "bold"), 
+        times_title = tk.Label(times_frame, text="Reminder Times", font=(self.font_family, 12, "bold"), 
                               bg='white', fg=self.colors["primary"])
         times_title.pack(anchor="w", padx=15, pady=(10, 5))
         
@@ -224,12 +336,12 @@ class ClockReminderApp:
         clock_in_frame = tk.Frame(times_content, bg='white')
         clock_in_frame.pack(fill="x", pady=5)
         
-        clock_in_label = tk.Label(clock_in_frame, text="Clock In Time:", font=("Arial", 10, "bold"), 
+        clock_in_label = tk.Label(clock_in_frame, text="Clock In Time:", font=(self.font_family, 10, "bold"), 
                                  bg='white')
         clock_in_label.pack(side=tk.LEFT, padx=5)
         
         self.clock_in_entry = tk.Entry(clock_in_frame, textvariable=self.clock_in_time, width=10,
-                                      font=("Arial", 10), justify="center",
+                                      font=(self.font_family, 10), justify="center",
                                       relief=tk.SOLID, bd=1)
         self.clock_in_entry.pack(side=tk.LEFT, padx=5)
         
@@ -244,12 +356,12 @@ class ClockReminderApp:
         clock_out_frame = tk.Frame(times_content, bg='white')
         clock_out_frame.pack(fill="x", pady=5)
         
-        clock_out_label = tk.Label(clock_out_frame, text="Clock Out Time:", font=("Arial", 10, "bold"), 
+        clock_out_label = tk.Label(clock_out_frame, text="Clock Out Time:", font=(self.font_family, 10, "bold"), 
                                   bg='white')
         clock_out_label.pack(side=tk.LEFT, padx=5)
         
         self.clock_out_entry = tk.Entry(clock_out_frame, textvariable=self.clock_out_time, width=10,
-                                       font=("Arial", 10), justify="center",
+                                       font=(self.font_family, 10), justify="center",
                                        relief=tk.SOLID, bd=1)
         self.clock_out_entry.pack(side=tk.LEFT, padx=5)
         
@@ -267,7 +379,7 @@ class ClockReminderApp:
             command=self.save_preset,
             bg=self.colors["primary"], 
             fg="white", 
-            font=("Arial", 9),
+            font=(self.font_family, 9),
             relief=tk.RAISED,
             bd=1
         )
@@ -277,7 +389,7 @@ class ClockReminderApp:
         preset_frame = tk.Frame(times_content, bg='white')
         preset_frame.pack(fill="x", pady=5)
         
-        tk.Label(preset_frame, text="Load Preset:", font=("Arial", 10, "bold"), 
+        tk.Label(preset_frame, text="Load Preset:", font=(self.font_family, 10, "bold"), 
                 bg='white').pack(side=tk.LEFT, padx=5)
         
         self.preset_var = tk.StringVar()
@@ -291,7 +403,7 @@ class ClockReminderApp:
         # Format hint
         time_hint = "Format: HH:MM (24-hour)" if self.time_format.get() == '24-hour' else "Format: HH:MM (12-hour)"
         self.format_hint = tk.Label(times_content, text=time_hint, bg='white', 
-                                   fg=self.colors["text"], font=("Arial", 9, "italic"))
+                                   fg=self.colors["text"], font=(self.font_family, 9, "italic"))
         self.format_hint.pack(pady=2)
         
         # Button Frame
@@ -307,7 +419,7 @@ class ClockReminderApp:
             fg="white", 
             width=15, 
             height=2,
-            font=("Arial", 10, "bold"),
+            font=(self.font_family, 10, "bold"),
             relief=tk.RAISED,
             bd=1,
             activebackground=self.colors["primary"],
@@ -323,7 +435,7 @@ class ClockReminderApp:
             fg="white", 
             width=15, 
             height=2,
-            font=("Arial", 10, "bold"),
+            font=(self.font_family, 10, "bold"),
             relief=tk.RAISED,
             bd=1,
             activebackground=self.colors["primary"],
@@ -347,7 +459,7 @@ class ClockReminderApp:
         counter_header = tk.Frame(counter_frame, bg=self.colors["primary"], height=8)
         counter_header.pack(fill="x")
         
-        counter_title = tk.Label(counter_frame, text="Statistics", font=("Arial", 12, "bold"), 
+        counter_title = tk.Label(counter_frame, text="Statistics", font=(self.font_family, 12, "bold"), 
                                 bg='white', fg=self.colors["primary"])
         counter_title.pack(anchor="w", padx=15, pady=(10, 5))
         
@@ -356,7 +468,7 @@ class ClockReminderApp:
         counter_content.pack(fill="x")
         
         counter_label = tk.Label(counter_content, text="Reminder Days:", bg='white', 
-                                font=("Arial", 10, "bold"))
+                                font=(self.font_family, 10, "bold"))
         counter_label.pack(pady=5)
         
         # Canvas for animated counter
@@ -367,7 +479,7 @@ class ClockReminderApp:
         # Draw the counter value
         self.count_display = self.counter_canvas.create_text(
             50, 30, text=str(self.reminder_count), 
-            font=("Arial", 28, "bold"), fill=self.colors["primary"]
+            font=(self.font_family, 28, "bold"), fill=self.colors["primary"]
         )
         
         # Current time display with selected timezone
@@ -383,10 +495,10 @@ class ClockReminderApp:
         time_content.pack(fill="x")
         
         tk.Label(time_content, text="Current Time:", bg='white', 
-                font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+                font=(self.font_family, 10, "bold")).pack(side=tk.LEFT, padx=5)
         
         self.time_display = tk.Label(time_content, text="", bg='white', 
-                                    font=("Arial", 12, "bold"), fg=self.colors["primary"])
+                                    font=(self.font_family, 12, "bold"), fg=self.colors["primary"])
         self.time_display.pack(side=tk.LEFT, padx=5)
         
         # Start time display updating
@@ -398,7 +510,7 @@ class ClockReminderApp:
         
         self.status_label = tk.Label(self.status_frame, text="Ready to start", 
                                     bg=self.colors["background"], fg=self.colors["text"], 
-                                    font=("Arial", 10, "italic"))
+                                    font=(self.font_family, 10, "italic"))
         self.status_label.pack(pady=5)
         
         # Update button text based on current state
@@ -454,7 +566,8 @@ class ClockReminderApp:
             
             # Save presets
             try:
-                with open("clock_reminder_presets.json", "w") as f:
+                preset_file = self.data_dir / "clock_reminder_presets.json"
+                with open(preset_file, "w") as f:
                     json.dump(presets, f)
                 
                 # Update presets dropdown
@@ -462,19 +575,23 @@ class ClockReminderApp:
                 
                 messagebox.showinfo("Success", f"Preset '{preset_name}' saved successfully!")
             except Exception as e:
-                self.time_display.config(text="Error: " + str(e))
+                messagebox.showerror("Error", f"Failed to save preset: {str(e)}")
     
     def update_time_display(self):
         """Update the current time display with selected timezone"""
         try:
             # Get the current time in the selected timezone
-            if self.timezone.get() == 'Local':
+            if self.timezone.get() == 'Local' or not pytz:
                 now = datetime.datetime.now()
             else:
                 # Use pytz to get the time in the selected timezone
-                tz = pytz.timezone(self.timezone.get())
-                now = datetime.datetime.now(tz)
-            
+                try:
+                    tz = pytz.timezone(self.timezone.get())
+                    now = datetime.datetime.now(tz)
+                except:
+                    # Fallback to local time if timezone is invalid
+                    now = datetime.datetime.now()
+                    
             # Format the time according to the selected time format
             if self.time_format.get() == '12-hour':
                 time_str = now.strftime("%I:%M:%S %p")
@@ -482,7 +599,7 @@ class ClockReminderApp:
                 time_str = now.strftime("%H:%M:%S")
                 
             # Add the timezone name
-            if self.timezone.get() != 'Local':
+            if self.timezone.get() != 'Local' and pytz:
                 time_str += f" ({self.timezone.get()})"
                 
             # Update the label
@@ -560,7 +677,7 @@ class ClockReminderApp:
         self.save_data()
         
         # Create and start reminder thread
-        self.reminder_thread = Thread(target=self.reminder_loop, daemon=True)
+        self.reminder_thread = threading.Thread(target=self.reminder_loop, daemon=True)
         self.reminder_thread.start()
 
     def stop_reminders(self):
@@ -572,7 +689,7 @@ class ClockReminderApp:
         
         while self.is_running:
             # Get current time in the selected timezone
-            if self.timezone.get() == 'Local':
+            if self.timezone.get() == 'Local' or not pytz:
                 now = datetime.datetime.now()
             else:
                 try:
@@ -600,6 +717,7 @@ class ClockReminderApp:
                 if last_date != current_date:
                     last_date = current_date
                     self.reminder_count += 1
+                    # Use after() to safely update UI from another thread
                     self.root.after(0, self.update_counter)
             
             # Check if we need to send clock-out reminder
@@ -621,16 +739,26 @@ class ClockReminderApp:
         self.save_data()
 
     def show_notification(self, title, message):
-        """Display a notification using tkinter or the system tray"""
+        """Display a notification using platform-specific methods"""
         try:
-            # Try using the system tray for notification
-            if hasattr(self, 'tray_icon'):
+            # Different notification methods based on platform
+            if PLATFORM == 'windows' and TRAY_SUPPORT and hasattr(self, 'tray_icon'):
+                # Windows: Use system tray notification
                 self.tray_icon.notify(title, message)
-                
-                # Add highlight animation to the dinosaur
+                self.highlight_dino()
+            elif PLATFORM == 'darwin' and TRAY_SUPPORT and 'rumps' in sys.modules:
+                # macOS: Use rumps notification if available
+                import rumps
+                rumps.notification(title, "", message)
+                self.highlight_dino()
+            elif PLATFORM == 'linux' and TRAY_SUPPORT and 'gi' in sys.modules:
+                # Linux: Use GI notifications
+                from gi.repository import Notify
+                notification = Notify.Notification.new(title, message)
+                notification.show()
                 self.highlight_dino()
             else:
-                # Fallback to a tkinter popup if tray icon not available
+                # Fallback to tkinter messagebox for all platforms
                 if not self.root.winfo_viewable():
                     # If window is hidden, briefly show it
                     self.root.deiconify()
@@ -642,6 +770,11 @@ class ClockReminderApp:
                     messagebox.showinfo(title, message)
         except Exception as e:
             print(f"Error showing notification: {str(e)}")
+            # Last resort fallback - always show tkinter messagebox
+            try:
+                messagebox.showinfo(title, message)
+            except:
+                pass
 
     def highlight_dino(self):
         """Briefly highlight the dinosaur when notification is sent"""
@@ -669,29 +802,77 @@ class ClockReminderApp:
             messagebox.showerror("Error", f"Could not send notification: {str(e)}")
 
     def create_system_tray(self):
-        """Create system tray icon and menu"""
-        # Create a simple icon
-        icon_image = self.create_tray_icon()
-        
-        menu = (
-            pystray.MenuItem('Show', self.show_window),
-            pystray.MenuItem('Start/Stop Reminders', self.toggle_reminders_tray),
-            pystray.MenuItem('Exit', self.exit_app)
-        )
-        
-        self.tray_icon = pystray.Icon("ClockReminder")
-        self.tray_icon.icon = icon_image
-        self.tray_icon.menu = pystray.Menu(*menu)
-        self.tray_icon.title = "Clock In/Out Reminder"
-        
-        # Run the icon in a separate thread
-        Thread(target=self.tray_icon.run, daemon=True).start()
+        """Create system tray icon and menu with platform-specific implementation"""
+        if not TRAY_SUPPORT:
+            print("System tray not supported on this platform")
+            return
+            
+        try:
+            if PLATFORM == 'windows':
+                # Windows implementation with pystray
+                icon_image = self.create_tray_icon()
+                
+                menu = (
+                    pystray.MenuItem('Show', self.show_window),
+                    pystray.MenuItem('Start/Stop Reminders', self.toggle_reminders_tray),
+                    pystray.MenuItem('Exit', self.exit_app)
+                )
+                
+                self.tray_icon = pystray.Icon("ClockReminder")
+                self.tray_icon.icon = icon_image
+                self.tray_icon.menu = pystray.Menu(*menu)
+                self.tray_icon.title = "Clock In/Out Reminder"
+                
+                # Run the icon in a separate thread
+                threading.Thread(target=self.tray_icon.run, daemon=True).start()
+                
+            elif PLATFORM == 'darwin' and 'rumps' in sys.modules:
+                # macOS implementation with rumps - using a different approach
+                # Since rumps requires running on the main thread, we'll use a different
+                # approach for macOS - create a background menu bar app that shows notifications
+                
+                # For macOS, we'll just use standard notification center instead
+                try:
+                    # Use subprocess to trigger macOS notification
+                    notification_script = f'''
+                    display notification "{self.root.title()} is still running in the background" with title "{self.root.title()}"
+                    '''
+                    subprocess.run(["osascript", "-e", notification_script])
+                    print("App is running in the background. Use Dock icon to restore.")
+                except Exception as e:
+                    print(f"Could not show notification: {e}")
+                
+            elif PLATFORM == 'linux' and 'gi' in sys.modules:
+                # Linux implementation with pystray
+                icon_image = self.create_tray_icon()
+                
+                menu = (
+                    pystray.MenuItem('Show', self.show_window),
+                    pystray.MenuItem('Start/Stop Reminders', self.toggle_reminders_tray),
+                    pystray.MenuItem('Exit', self.exit_app)
+                )
+                
+                self.tray_icon = pystray.Icon("ClockReminder")
+                self.tray_icon.icon = icon_image
+                self.tray_icon.menu = pystray.Menu(*menu)
+                
+                # Run the icon in a separate thread
+                threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        except Exception as e:
+            print(f"Error creating system tray: {str(e)}")
 
     def show_window(self):
-        """Show the main window from system tray with animation"""
+        """Show the main window from system tray with platform-specific animation"""
         # First make sure window is ready to show
         self.root.update()
         
+        if PLATFORM == 'darwin':
+            # macOS: Simple show without animation (animations aren't well supported)
+            self.root.deiconify()
+            self.root.lift()
+            return
+            
+        # For other platforms, use a nice animation
         # Get screen dimensions
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -743,14 +924,34 @@ class ClockReminderApp:
                 self.start_button.config(text="Stop Reminders")
                 self.status_label.config(text="Reminders are active")
             except ValueError as e:
-                # Can't show messagebox when minimized, so just don't start
+                # Can't show messagebox when minimized, so just log the error
                 print(f"Error starting reminders: {str(e)}")
 
     def create_tray_icon(self):
         """Create a simple dinosaur icon for the system tray"""
+        if not ('PIL' in sys.modules or 'Image' in sys.modules):
+            # PIL not available, return a blank image
+            return None
+            
+        # Basic imports check
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            return None
+        
         # If the icon file exists, use it
-        if os.path.exists("clock.ico"):
-            return Image.open("clock.ico")
+        icon_paths = [
+            self.app_dir / "clock.ico",
+            self.app_dir / "clock.png",
+            self.app_dir / "clock.icns"
+        ]
+        
+        for icon_path in icon_paths:
+            if icon_path.exists():
+                try:
+                    return Image.open(str(icon_path))
+                except:
+                    pass
             
         # Otherwise create a simple icon
         width = 64
@@ -799,17 +1000,24 @@ class ClockReminderApp:
         return image
         
     def exit_app(self):
-        """Exit the application from system tray with fade-out effect"""
+        """Exit the application from system tray with platform-specific handling"""
         # Save data first
         self.save_data()
         
-        # If window is visible, create fade-out effect
-        if self.root.winfo_viewable():
+        # Platform-specific exit handling
+        if PLATFORM == 'darwin':
+            # Stop system tray if it exists
+            if hasattr(self, 'tray_icon'):
+                try:
+                    self.tray_icon.stop()
+                except:
+                    pass
+            
+        # If window is visible, create fade-out effect on supported platforms
+        if self.root.winfo_viewable() and PLATFORM != 'darwin':  # macOS doesn't support transparency well
             self.fade_out_window()
         else:
             # Just close everything
-            if hasattr(self, 'tray_icon'):
-                self.tray_icon.stop()
             self.root.destroy()
             sys.exit(0)
 
@@ -818,36 +1026,42 @@ class ClockReminderApp:
         if alpha > 0:
             # Set window transparency (if supported)
             try:
+                # This works on Windows and some Linux environments
                 self.root.attributes('-alpha', alpha)
                 # Continue fading
                 self.root.after(50, lambda: self.fade_out_window(alpha - 0.1))
             except:
                 # Transparency not supported, just close
-                if hasattr(self, 'tray_icon'):
-                    self.tray_icon.stop()
                 self.root.destroy()
                 sys.exit(0)
         else:
             # Completely faded out, close app
-            if hasattr(self, 'tray_icon'):
-                self.tray_icon.stop()
             self.root.destroy()
             sys.exit(0)
 
     def minimize_to_tray(self):
-        """Minimize the application to system tray"""
+        """Minimize the application to system tray if supported"""
         # Make sure system tray icon exists
-        if not hasattr(self, 'tray_icon'):
+        if not hasattr(self, 'tray_icon') and TRAY_SUPPORT:
             self.create_system_tray()
-        
-        # Hide the window
-        self.root.withdraw()
-        
-        # Show notification
-        self.show_notification(
-            "App Minimized",
-            "The app is still running in the system tray"
-        )
+            
+        if TRAY_SUPPORT:
+            # Hide the window
+            self.root.withdraw()
+            
+            # Show notification
+            self.show_notification(
+                "App Minimized",
+                "The app is still running in the system tray"
+            )
+        else:
+            # If system tray is not supported, inform the user and minimize normally
+            messagebox.showinfo(
+                "Minimize",
+                "System tray is not supported on this platform.\n"
+                "The app will be minimized to the taskbar."
+            )
+            self.root.iconify()
         
     def save_data(self):
         """Save application data to JSON file"""
@@ -866,7 +1080,8 @@ class ClockReminderApp:
             data["clock_out_ampm"] = self.clock_out_ampm.get()
         
         try:
-            with open("clock_reminder_data.json", "w") as f:
+            data_file = self.data_dir / "clock_reminder_data.json"
+            with open(data_file, "w") as f:
                 json.dump(data, f)
         except Exception as e:
             print(f"Error saving data: {str(e)}")
@@ -874,8 +1089,9 @@ class ClockReminderApp:
     def load_data(self):
         """Load application data from JSON file"""
         try:
-            if os.path.exists("clock_reminder_data.json"):
-                with open("clock_reminder_data.json", "r") as f:
+            data_file = self.data_dir / "clock_reminder_data.json"
+            if data_file.exists():
+                with open(data_file, "r") as f:
                     data = json.load(f)
                     self.clock_in_time.set(data.get("clock_in_time", "09:00"))
                     self.clock_out_time.set(data.get("clock_out_time", "17:00"))
@@ -897,8 +1113,9 @@ class ClockReminderApp:
     def load_presets(self):
         """Load saved presets from file"""
         try:
-            if os.path.exists("clock_reminder_presets.json"):
-                with open("clock_reminder_presets.json", "r") as f:
+            preset_file = self.data_dir / "clock_reminder_presets.json"
+            if preset_file.exists():
+                with open(preset_file, "r") as f:
                     return json.load(f)
         except:
             pass
@@ -946,6 +1163,7 @@ class ClockReminderApp:
                     self.clock_out_ampm.set(preset_data["clock_out_ampm"])
             
             messagebox.showinfo("Success", f"Loaded preset '{preset_name}'")
+            
     def update_time_format(self, event=None):
         """Handle changes in the time format selection."""
         selected_format = self.time_format.get()
@@ -967,6 +1185,7 @@ class ClockReminderApp:
             if hasattr(self, 'clock_out_ampm') and not self.clock_out_ampm.winfo_ismapped():
                 self.clock_out_ampm.pack(side=tk.LEFT, padx=5, after=self.clock_out_entry)
         self.save_data() # Save the new format setting
+        
     def start_animations(self):
         """Start the UI animations."""
         self.animation_active = True
@@ -1023,28 +1242,20 @@ class ClockReminderApp:
          """Helper function to update the counter canvas text."""
          self.counter_canvas.itemconfig(self.count_display, text=str(value))
 
-if __name__ == "__main__":
+
+def main():
     # Create the main application window
     root = tk.Tk()
 
     # Create an instance of the ClockReminderApp
     app = ClockReminderApp(root)
 
-    # Check for the "--minimized" argument before starting the main loop
-    # The logic inside __init__ already handles withdrawing the window
-    # if the argument is present, but the system tray needs to be created
-    # if the argument is passed and the app starts minimized.
-    # Note: The original code handles withdraw() inside __init__ when --minimized is passed,
-    # but doesn't explicitly call create_system_tray there. We ensure it's created here if needed.
-    if "--minimized" in sys.argv and not hasattr(app, 'tray_icon'):
-         # If started minimized and tray icon doesn't exist yet (e.g., not loaded from saved state), create it.
-         # The __init__ method already hides the window (root.withdraw()) if --minimized is passed.
-         app.create_system_tray() # Ensure tray icon is created for minimized startup
-
-
     # Setup closing behavior - minimize to tray or exit
-    # The lambda ensures minimize_to_tray is called without arguments
     root.protocol("WM_DELETE_WINDOW", app.minimize_to_tray)
 
     # Start the Tkinter event loop
     root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
